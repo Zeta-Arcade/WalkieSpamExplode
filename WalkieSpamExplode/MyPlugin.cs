@@ -1,0 +1,186 @@
+﻿using BepInEx;
+using GameNetcodeStuff;
+using HarmonyLib;
+using LethalNetworkAPI;
+using System;
+using System.CodeDom;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Unity;
+using UnityEngine;
+using UnityEngine.Windows;
+using Unity.Netcode;
+
+namespace WalkieSpamExplode
+{
+    [BepInDependency(LethalNetworkAPI.MyPluginInfo.PLUGIN_GUID, BepInDependency.DependencyFlags.HardDependency)]
+    [BepInDependency("com.sigurd.csync", BepInDependency.DependencyFlags.HardDependency)]
+    [BepInPlugin(PluginInfo.modGUID, PluginInfo.modName, PluginInfo.modVersion)]
+    public class WalkieSpamExplodeBase : BaseUnityPlugin
+    {
+        private Harmony harmony = new Harmony(PluginInfo.modGUID);
+        public static BepInEx.Logging.ManualLogSource Logger; //Access this elsewhere via WalkieSpamExplode.Logger.LogDebug($"???");
+        public static WalkieSpamExplodeBase Instance;
+        private readonly Dictionary<ulong, float> angerLevels = new();
+        private Coroutine decreaseAngerCoroutine;
+        internal static new ConfigHandler Config;
+        private void Awake()
+        {
+            if (Instance == null)
+            {
+                Instance = this;
+            }
+            Logger = base.Logger;
+            Config = new ConfigHandler(base.Config);
+            WalkieSpamNetwork.Init();
+            Logger.LogInfo($"Plugin is loaded!");
+            harmony.PatchAll();
+        }
+        public void IncreaseAnger(ulong playerID, int amount)
+        {
+            if (!NetworkManager.Singleton.IsHost) return;
+            if (!angerLevels.ContainsKey(playerID))
+            {
+                angerLevels[playerID] = 0;
+            }
+            if (Config.debugMode.Value)
+            {
+                Logger.LogInfo($"Player {playerID} anger before: {angerLevels[playerID]}");
+            }
+            angerLevels[playerID] += amount;
+            if (Config.debugMode.Value)
+            {
+                Logger.LogInfo($"Player {playerID} anger after: {angerLevels[playerID]}");
+            }
+            if (angerLevels[playerID] >= Config.maxAnger.Value)
+            {
+                PunishPlayer(playerID);
+            }
+            else if (angerLevels[playerID] >= Config.angerWarningThreshold.Value && Config.angerWarningThreshold.Value > 0)
+            {
+                WarnPlayer(playerID);
+            }
+            if (decreaseAngerCoroutine == null)
+            {
+                decreaseAngerCoroutine = StartCoroutine(DecreaseAngerOverTime());
+            }
+        }
+        private IEnumerator DecreaseAngerOverTime()
+        {
+            while (true)
+            {
+                yield return new WaitForSeconds(Config.angerDecreaseInterval.Value);
+
+                List<ulong> playersToReset = new();
+
+                foreach (var player in angerLevels.Keys.ToList())
+                {
+                    angerLevels[player] -= Config.angerDecreaseAmount.Value;
+                    if (Config.debugMode.Value)
+                    {
+                        Logger.LogInfo($"Player {player} anger decreased by {Config.angerDecreaseAmount.Value}. Current anger: {angerLevels[player]}");
+                    }
+                    if (angerLevels[player] <= 0)
+                    {
+                        playersToReset.Add(player);
+                    }
+                }
+
+                foreach (ulong player in playersToReset)
+                {
+                    angerLevels.Remove(player);
+                }
+            }
+        }
+        public void WarnPlayer(ulong playerID)
+        {
+            //if (StartOfRound.Instance.localPlayerController.playerClientId != playerID) return;
+            //HUDManager.Instance.DisplayTip("WARNING", $"Spammers will be punished!", true);
+            WalkieSpamNetwork.SendWarning(playerID);
+        }
+        public void ShowWarning()
+        {
+            HUDManager.Instance.DisplayTip("WARNING", $"Spammers will be punished!", true);
+        }
+        public void PunishPlayer(ulong playerID) //Either spawn a mine, or start a timer that keeps setting their Walkie battery to 0% until the Anger Meter is reset
+        {
+            if (StartOfRound.Instance == null) return;
+            float roll = UnityEngine.Random.Range(0f, 100f);
+            if (roll <= Config.explosionChance.Value)
+            {
+                if (!StartOfRound.Instance.inShipPhase)
+                {
+                    PlayerControllerB targetPlayer = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
+                    if (targetPlayer == null) return;
+                    WalkieSpamNetwork.SendExplosion(targetPlayer.transform.position, playerID);
+                    ResetAnger(playerID);
+                }
+            }
+            else
+            {
+                WalkieSpamNetwork.SendBatteryDrain(playerID);
+            }
+        }
+        public void ResetAnger(ulong playerID) //Such as on Respawn, + config option
+        {
+            angerLevels.Remove(playerID);
+        }
+        public void DrainBattery(ulong playerID)
+        {
+            if (!StartOfRound.Instance) return;
+            if (!StartOfRound.Instance.currentLevel) return;
+            PlayerControllerB player = StartOfRound.Instance.localPlayerController;
+            if (!player) return;
+            if (player.playerClientId != playerID) return;
+            foreach (var item in player.ItemSlots)
+            {
+                if (item == null) continue;
+                if (item.insertedBattery == null) continue;
+                if (item.insertedBattery.empty) continue;
+                if (item.itemProperties.itemName != "WalkieTalkie") continue;
+                item.insertedBattery.charge = 0f;
+                if (Config.destroyWalkie.Value)
+                {
+                    item.GetComponent<NetworkObject>()?.Despawn(true);
+                }
+            }
+        }
+        public static void ReceiveSelfDestruct(Vector3 position, ulong clientId)
+        {
+            Landmine.SpawnExplosion(position, true, Config.explosionRadius.Value, Config.damageRadius.Value, Config.nonLethalDamage.Value, 0f, (GameObject)null, false);
+        }
+        [HarmonyPatch(typeof(WalkieTalkie))]
+        internal class WalkieTalkiePatch
+        {
+            [HarmonyPatch("SwitchWalkieTalkieOn")]
+            [HarmonyPostfix]
+            private static void SwitchWalkieTalkieOnPatch(WalkieTalkie __instance, ref bool ___isBeingUsed)
+            {
+
+                if (!___isBeingUsed) return;
+                PlayerControllerB player = __instance.playerHeldBy;
+                if (player == null) return;
+                if (player.playerClientId != NetworkManager.Singleton.LocalClientId) return;
+                if (Config.debugMode.Value)
+                {
+                    WalkieSpamExplodeBase.Logger.LogInfo("Walkie Turned On!");
+                }
+                WalkieSpamNetwork.SendWalkieUsed(player.playerClientId, Config.angerIncreaseAmount.Value);
+            }
+        }
+        [HarmonyPatch(typeof(StartOfRound))]
+        internal class StartOfRoundPatch2
+        {
+            [HarmonyPatch("ArriveAtLevel")]
+            [HarmonyPostfix]
+            static void Arrive(StartOfRound __instance)
+            {
+                //WalkieSpamExplodeBase.Logger.LogInfo("ARRIVE HIT");
+            }
+        }
+    }
+}
+
