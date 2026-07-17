@@ -1,4 +1,5 @@
 ﻿using BepInEx;
+using CSync;
 using GameNetcodeStuff;
 using HarmonyLib;
 using LethalNetworkAPI;
@@ -10,9 +11,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Unity;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.Windows;
-using Unity.Netcode;
 
 namespace WalkieSpamExplode
 {
@@ -97,24 +98,36 @@ namespace WalkieSpamExplode
         }
         public void WarnPlayer(ulong playerID)
         {
-            //if (StartOfRound.Instance.localPlayerController.playerClientId != playerID) return;
-            //HUDManager.Instance.DisplayTip("WARNING", $"Spammers will be punished!", true);
             WalkieSpamNetwork.SendWarning(playerID);
         }
         public void ShowWarning()
         {
             HUDManager.Instance.DisplayTip("WARNING", $"Spammers will be punished!", true);
         }
-        public void PunishPlayer(ulong playerID) //Either spawn a mine, or start a timer that keeps setting their Walkie battery to 0% until the Anger Meter is reset
+        public void PunishPlayer(ulong playerID) 
         {
             if (StartOfRound.Instance == null) return;
             float roll = UnityEngine.Random.Range(0f, 100f);
             if (roll <= Config.explosionChance.Value)
             {
-                if (!StartOfRound.Instance.inShipPhase)
+                if (!StartOfRound.Instance.inShipPhase && StartOfRound.Instance.shipHasLanded && !StartOfRound.Instance.shipIsLeaving)
                 {
                     PlayerControllerB targetPlayer = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
                     if (targetPlayer == null) return;
+                    WalkieTalkie walkie = null;
+                    foreach (var item in targetPlayer.ItemSlots)
+                    {
+                        if (item == null) continue;
+                        if (item is WalkieTalkie wt)
+                        {
+                            walkie = wt;
+                            break;
+                        }
+                    }
+                    if (walkie != null)
+                    {
+                        // Here, i need to try and access BroadcastSFXFromWalkieTalkie(playerDieOnWalkieTalkieSFX, (int)playerHeldBy.playerClientId);
+                    }
                     WalkieSpamNetwork.SendExplosion(targetPlayer.transform.position, playerID);
                     ResetAnger(playerID);
                 }
@@ -140,22 +153,55 @@ namespace WalkieSpamExplode
                 if (item == null) continue;
                 if (item.insertedBattery == null) continue;
                 if (item.insertedBattery.empty) continue;
-                if (item.itemProperties.itemName != "WalkieTalkie") continue;
+                if (item.itemProperties.itemName != "Walkie-talkie") continue;
                 item.insertedBattery.charge = 0f;
                 if (Config.destroyWalkie.Value)
                 {
-                    item.GetComponent<NetworkObject>()?.Despawn(true);
+                    WalkieSpamNetwork.SendDestroyWalkie(playerID);
                 }
+            }
+        }
+        public void DestroyWalkie(ulong playerID)
+        {
+            PlayerControllerB player = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
+
+            if (player == null) return;
+
+            foreach (var item in player.ItemSlots)
+            {
+                if (item == null) continue;
+                if (item.itemProperties.itemName != "Walkie-talkie") continue;
+
+                NetworkObject netObj = item.GetComponent<NetworkObject>();
+
+                if (netObj != null && netObj.IsSpawned)
+                {
+                    netObj.Despawn(true);
+                }
+
+                break;
             }
         }
         public static void ReceiveSelfDestruct(Vector3 position, ulong clientId)
         {
+            if (!StartOfRound.Instance) return;
+            if (!StartOfRound.Instance.currentLevel) return;
+            PlayerControllerB player = StartOfRound.Instance.localPlayerController;
+            if (Config.destroyWalkie.Value)
+            {
+                WalkieSpamNetwork.SendDestroyWalkie(clientId);
+            }
+            if (player && player.playerClientId == clientId)
+            {
+                var launchForce = new Vector3(UnityEngine.Random.Range(-1f, 1f), 1f, UnityEngine.Random.Range(-1f, 1f)).normalized * 30f;
+                //player.KillPlayer(launchForce, true, CauseOfDeath.Blast);
+            }
             Landmine.SpawnExplosion(position, true, Config.explosionRadius.Value, Config.damageRadius.Value, Config.nonLethalDamage.Value, 0f, (GameObject)null, false);
         }
         [HarmonyPatch(typeof(WalkieTalkie))]
         internal class WalkieTalkiePatch
         {
-            [HarmonyPatch("SwitchWalkieTalkieOn")]
+            [HarmonyPatch("SendWalkieTalkieStartTransmissionSFX")]
             [HarmonyPostfix]
             private static void SwitchWalkieTalkieOnPatch(WalkieTalkie __instance, ref bool ___isBeingUsed)
             {
@@ -166,7 +212,7 @@ namespace WalkieSpamExplode
                 if (player.playerClientId != NetworkManager.Singleton.LocalClientId) return;
                 if (Config.debugMode.Value)
                 {
-                    WalkieSpamExplodeBase.Logger.LogInfo("Walkie Turned On!");
+                    WalkieSpamExplodeBase.Logger.LogInfo("Walkie triggered!");
                 }
                 WalkieSpamNetwork.SendWalkieUsed(player.playerClientId, Config.angerIncreaseAmount.Value);
             }

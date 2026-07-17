@@ -14,13 +14,15 @@ namespace WalkieSpamExplode
         public static LNetworkMessage<WalkieMessage> WalkieUsedMessage;
         public static LNetworkMessage<WarningMessage> WarningMessage;
         public static LNetworkMessage<ExplosionMessage> ExplosionMessage;
+        public static LNetworkMessage<DestroyWalkieMessage> DestroyWalkieMessage;
         public static LNetworkMessage<BatteryDrainMessage> BatteryDrainMessage;
 
         public static void Init()
         {
             WalkieUsedMessage = LNetworkMessage<WalkieMessage>.Create("WalkieUsed",onServerReceived: OnWalkieUsed);
             WarningMessage = LNetworkMessage<WarningMessage>.Create("Warning",onClientReceived: OnWarningReceived);
-            ExplosionMessage = LNetworkMessage<ExplosionMessage>.Create("Explosion",onClientReceived: OnExplosionReceived);
+            ExplosionMessage = LNetworkMessage<ExplosionMessage>.Create("Explosion", onClientReceived: OnExplosionReceived);
+            DestroyWalkieMessage = LNetworkMessage<DestroyWalkieMessage>.Create("DestroyWalkie", onServerReceived: OnDestroyWalkieReceived);
             BatteryDrainMessage = LNetworkMessage<BatteryDrainMessage>.Create("BatteryDrain",onClientReceived: OnBatteryDrainReceived);
         }
         private static void OnWalkieUsed(WalkieMessage message, ulong senderClientId)
@@ -39,7 +41,13 @@ namespace WalkieSpamExplode
 
         private static void OnExplosionReceived(ExplosionMessage message)
         {
-            WalkieSpamExplodeBase.ReceiveSelfDestruct(new Vector3(message.x, message.y, message.z), 0);
+            WalkieSpamExplodeBase.ReceiveSelfDestruct(new Vector3(message.x, message.y, message.z), message.playerID);
+        }
+
+        private static void OnDestroyWalkieReceived(DestroyWalkieMessage message, ulong senderClientId)
+        {
+            if (!NetworkManager.Singleton.IsHost) return;
+            WalkieSpamExplodeBase.Instance.DestroyWalkie(message.playerID);
         }
 
         private static void OnBatteryDrainReceived(BatteryDrainMessage message)
@@ -65,7 +73,14 @@ namespace WalkieSpamExplode
         public static void SendExplosion(Vector3 position, ulong playerID)
         {
             if (!NetworkManager.Singleton.IsHost) return;
-            ExplosionMessage.SendClients(new ExplosionMessage{x = position.x,y = position.y,z = position.z}, NetworkManager.Singleton.ConnectedClientsIds.ToArray());
+            ExplosionMessage.SendClients(new ExplosionMessage { x = position.x, y = position.y, z = position.z, playerID = playerID }, NetworkManager.Singleton.ConnectedClientsIds.ToArray());
+        }
+        public static void SendDestroyWalkie(ulong playerID)
+        {
+            DestroyWalkieMessage.SendServer(new DestroyWalkieMessage
+            {
+                playerID = playerID
+            });
         }
         public static void SendBatteryDrain(ulong playerID)
         {
@@ -78,6 +93,7 @@ namespace WalkieSpamExplode
         public float x;
         public float y;
         public float z;
+        public ulong playerID;
     }
 
     public class WalkieMessage
@@ -90,6 +106,10 @@ namespace WalkieSpamExplode
         public ulong playerID;
     }
     public class BatteryDrainMessage
+    {
+        public ulong playerID;
+    }
+    public class DestroyWalkieMessage
     {
         public ulong playerID;
     }
