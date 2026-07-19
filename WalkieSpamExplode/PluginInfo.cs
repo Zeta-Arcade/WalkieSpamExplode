@@ -10,6 +10,6 @@ namespace WalkieSpamExplode
     {
         public const string modGUID = "ZetaArcade.WalkieSpamExplode";
         public const string modName = "WalkieSpamExplode";
-        public const string modVersion = "1.0.2";
+        public const string modVersion = "1.0.3";
     }
 }
