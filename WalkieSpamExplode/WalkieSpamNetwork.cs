@@ -29,7 +29,7 @@ namespace WalkieSpamExplode
         {
             if (!NetworkManager.Singleton.IsHost) return;
             if (WalkieSpamExplodeBase.Instance == null) return;
-            WalkieSpamExplodeBase.Instance.IncreaseAnger(message.playerID, message.amount);
+            WalkieSpamExplodeBase.Instance.IncreaseAnger(message.playerID, message.amount, message.isRemote);
         }
         private static void OnWarningReceived(WarningMessage message)
         {
@@ -41,13 +41,13 @@ namespace WalkieSpamExplode
 
         private static void OnExplosionReceived(ExplosionMessage message)
         {
-            WalkieSpamExplodeBase.ReceiveSelfDestruct(new Vector3(message.x, message.y, message.z), message.playerID);
+            WalkieSpamExplodeBase.ReceiveSelfDestruct(new Vector3(message.x, message.y, message.z), message.playerID, message.isRemote);
         }
 
         private static void OnDestroyWalkieReceived(DestroyWalkieMessage message, ulong senderClientId)
         {
             if (!NetworkManager.Singleton.IsHost) return;
-            WalkieSpamExplodeBase.Instance.DestroyWalkie(message.playerID);
+            WalkieSpamExplodeBase.Instance.DestroyWalkie(message.playerID, message.isRemote);
         }
 
         private static void OnBatteryDrainReceived(BatteryDrainMessage message)
@@ -58,10 +58,10 @@ namespace WalkieSpamExplode
             WalkieSpamExplodeBase.Instance.DrainBattery(message.playerID);
         }
 
-        public static void SendWalkieUsed(ulong playerID, int amount)
+        public static void SendWalkieUsed(ulong playerID, int amount, bool isRemote)
         {
             if (!NetworkManager.Singleton.IsListening) return;
-            WalkieUsedMessage.SendServer(new WalkieMessage{playerID = playerID, amount = amount});
+            WalkieUsedMessage.SendServer(new WalkieMessage{playerID = playerID, amount = amount, isRemote = isRemote});
         }
 
         public static void SendWarning(ulong playerID)
@@ -70,16 +70,17 @@ namespace WalkieSpamExplode
             WarningMessage.SendClient(new WarningMessage{playerID = playerID},playerID);
         }
 
-        public static void SendExplosion(Vector3 position, ulong playerID)
+        public static void SendExplosion(Vector3 position, ulong playerID, bool isRemote)
         {
             if (!NetworkManager.Singleton.IsHost) return;
-            ExplosionMessage.SendClients(new ExplosionMessage { x = position.x, y = position.y, z = position.z, playerID = playerID }, NetworkManager.Singleton.ConnectedClientsIds.ToArray());
+            ExplosionMessage.SendClients(new ExplosionMessage { x = position.x, y = position.y, z = position.z, playerID = playerID, isRemote = isRemote }, NetworkManager.Singleton.ConnectedClientsIds.ToArray());
         }
-        public static void SendDestroyWalkie(ulong playerID)
+        public static void SendDestroyWalkie(ulong playerID, bool isRemote)
         {
             DestroyWalkieMessage.SendServer(new DestroyWalkieMessage
             {
-                playerID = playerID
+                playerID = playerID,
+                isRemote = isRemote
             });
         }
         public static void SendBatteryDrain(ulong playerID)
@@ -94,12 +95,14 @@ namespace WalkieSpamExplode
         public float y;
         public float z;
         public ulong playerID;
+        public bool isRemote;
     }
 
     public class WalkieMessage
     {
         public ulong playerID;
         public int amount;
+        public bool isRemote;
     }
     public class WarningMessage
     {
@@ -112,5 +115,6 @@ namespace WalkieSpamExplode
     public class DestroyWalkieMessage
     {
         public ulong playerID;
+        public bool isRemote;
     }
 }

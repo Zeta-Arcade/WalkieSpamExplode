@@ -8,6 +8,7 @@ using System.CodeDom;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Unity;
@@ -28,6 +29,8 @@ namespace WalkieSpamExplode
         private readonly Dictionary<ulong, float> angerLevels = new();
         private Coroutine decreaseAngerCoroutine;
         internal static new ConfigHandler Config;
+        private static readonly MethodInfo BroadcastSFXMethod = typeof(WalkieTalkie).GetMethod("BroadcastSFXFromWalkieTalkie",BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo PlayerDeathSFXField =typeof(WalkieTalkie).GetField("playerDieOnWalkieTalkieSFX",BindingFlags.Instance | BindingFlags.NonPublic);
         private void Awake()
         {
             if (Instance == null)
@@ -40,7 +43,26 @@ namespace WalkieSpamExplode
             Logger.LogInfo($"Plugin is loaded!");
             harmony.PatchAll();
         }
-        public void IncreaseAnger(ulong playerID, int amount)
+        public static void BroadcastWalkieDeathSFX(WalkieTalkie walkie, ulong playerID)
+        {
+            if (BroadcastSFXMethod == null)
+            {
+                Logger.LogError("Could not find BroadcastSFXFromWalkieTalkie");
+                return;
+            }
+
+            if (PlayerDeathSFXField == null)
+            {
+                Logger.LogError("Could not find playerDieOnWalkieTalkieSFX");
+                return;
+            }
+
+            AudioClip clip = (AudioClip)PlayerDeathSFXField.GetValue(walkie);
+
+            BroadcastSFXMethod.Invoke(walkie, new object[]
+            {clip,(int)playerID});
+        }
+        public void IncreaseAnger(ulong playerID, int amount, bool isRemote = false)
         {
             if (!NetworkManager.Singleton.IsHost) return;
             if (!angerLevels.ContainsKey(playerID))
@@ -58,7 +80,7 @@ namespace WalkieSpamExplode
             }
             if (angerLevels[playerID] >= Config.maxAnger.Value)
             {
-                PunishPlayer(playerID);
+                PunishPlayer(playerID, isRemote);
             }
             else if (angerLevels[playerID] >= Config.angerWarningThreshold.Value && Config.angerWarningThreshold.Value > 0)
             {
@@ -104,14 +126,14 @@ namespace WalkieSpamExplode
         {
             HUDManager.Instance.DisplayTip("WARNING", $"Spammers will be punished!", true);
         }
-        public void PunishPlayer(ulong playerID) 
+        public void PunishPlayer(ulong playerID, bool isRemote) 
         {
             if (StartOfRound.Instance == null) return;
             float roll = UnityEngine.Random.Range(0f, 100f);
-            if (roll <= Config.explosionChance.Value)
+            if (roll <= Config.walkieExplosionChance.Value && !isRemote)
             {
-                if (!StartOfRound.Instance.inShipPhase && StartOfRound.Instance.shipHasLanded && !StartOfRound.Instance.shipIsLeaving)
-                {
+                if ((!Config.explosionInOrbit.Value && (!StartOfRound.Instance.inShipPhase && StartOfRound.Instance.shipHasLanded && !StartOfRound.Instance.shipIsLeaving)) || Config.explosionInOrbit.Value)
+                { //If no Explosion in orbit + all criteria is met, OR explosions in orbit are allowed
                     PlayerControllerB targetPlayer = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
                     if (targetPlayer == null) return;
                     WalkieTalkie walkie = null;
@@ -126,13 +148,41 @@ namespace WalkieSpamExplode
                     }
                     if (walkie != null)
                     {
-                        // Here, i need to try and access BroadcastSFXFromWalkieTalkie(playerDieOnWalkieTalkieSFX, (int)playerHeldBy.playerClientId);
+                        BroadcastWalkieDeathSFX(walkie, playerID);
                     }
-                    WalkieSpamNetwork.SendExplosion(targetPlayer.transform.position, playerID);
+                    WalkieSpamNetwork.SendExplosion(targetPlayer.transform.position, playerID, isRemote);
                     ResetAnger(playerID);
                 }
             }
-            else
+            else if (roll <= Config.remoteExplosionChance.Value && isRemote)
+            {
+                if ((!Config.explosionInOrbit.Value && (!StartOfRound.Instance.inShipPhase && StartOfRound.Instance.shipHasLanded && !StartOfRound.Instance.shipIsLeaving)) || Config.explosionInOrbit.Value)
+                { //If no Explosion in orbit + all criteria is met, OR explosions in orbit are allowed
+                    PlayerControllerB targetPlayer = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
+                    if (targetPlayer == null) return;
+                    RemoteProp remote = null;
+                    foreach (var item in targetPlayer.ItemSlots)
+                    {
+                        if (item == null) continue;
+                        if (item is RemoteProp rp)
+                        {
+                            remote = rp;
+                            break;
+                        }
+                    }
+                    if (remote != null)
+                    {
+                        //Unused
+                    }
+                    WalkieSpamNetwork.SendExplosion(targetPlayer.transform.position, playerID, isRemote);
+                    ResetAnger(playerID);
+                }
+            }
+            else if (isRemote) //It is a remote, but the explosion chance failed, so just destroy the remote
+            {
+                WalkieSpamNetwork.SendDestroyWalkie(playerID, true);
+            }
+            else //Not a remote, and the roll failed, so drain the battery of the walkie
             {
                 WalkieSpamNetwork.SendBatteryDrain(playerID);
             }
@@ -155,13 +205,13 @@ namespace WalkieSpamExplode
                 if (item.insertedBattery.empty) continue;
                 if (item.itemProperties.itemName != "Walkie-talkie") continue;
                 item.insertedBattery.charge = 0f;
-                if (Config.destroyWalkie.Value)
+                if (Config.destroyItem.Value)
                 {
-                    WalkieSpamNetwork.SendDestroyWalkie(playerID);
+                    WalkieSpamNetwork.SendDestroyWalkie(playerID, false);
                 }
             }
         }
-        public void DestroyWalkie(ulong playerID)
+        public void DestroyWalkie(ulong playerID, bool isRemote)
         {
             PlayerControllerB player = StartOfRound.Instance.allPlayerScripts.FirstOrDefault(p => p.playerClientId == playerID);
 
@@ -170,26 +220,21 @@ namespace WalkieSpamExplode
             foreach (var item in player.ItemSlots)
             {
                 if (item == null) continue;
-                if (item.itemProperties.itemName != "Walkie-talkie") continue;
-
-                NetworkObject netObj = item.GetComponent<NetworkObject>();
-
-                if (netObj != null && netObj.IsSpawned)
-                {
-                    netObj.Despawn(true);
-                }
-
+                string expectedItem = isRemote ? "Remote" : "Walkie-talkie";
+                if (item.itemProperties.itemName != expectedItem) continue;
+                player.carryWeight = Mathf.Clamp(player.carryWeight - (item.itemProperties.weight - 1f), 1f, 10f);
+                player.DestroyItemInSlot(Array.IndexOf(player.ItemSlots, item));
                 break;
             }
         }
-        public static void ReceiveSelfDestruct(Vector3 position, ulong clientId)
+        public static void ReceiveSelfDestruct(Vector3 position, ulong clientId, bool isRemote)
         {
             if (!StartOfRound.Instance) return;
             if (!StartOfRound.Instance.currentLevel) return;
             PlayerControllerB player = StartOfRound.Instance.localPlayerController;
-            if (Config.destroyWalkie.Value)
+            if (Config.destroyItem.Value)
             {
-                WalkieSpamNetwork.SendDestroyWalkie(clientId);
+                WalkieSpamNetwork.SendDestroyWalkie(clientId, isRemote);
             }
             if (player && player.playerClientId == clientId)
             {
@@ -214,7 +259,25 @@ namespace WalkieSpamExplode
                 {
                     WalkieSpamExplodeBase.Logger.LogInfo("Walkie triggered!");
                 }
-                WalkieSpamNetwork.SendWalkieUsed(player.playerClientId, Config.angerIncreaseAmount.Value);
+                WalkieSpamNetwork.SendWalkieUsed(player.playerClientId, Config.walkieAngerIncreaseAmount.Value, false);
+            }
+        }
+        [HarmonyPatch(typeof(RemoteProp))]
+        internal class RemotePropPatch
+        {
+            [HarmonyPatch("ItemActivate")]
+            [HarmonyPostfix]
+            private static void ItemActivatePatch(RemoteProp __instance, bool used, bool buttonDown)
+            {
+                if (!used || !buttonDown) return;
+                PlayerControllerB player = __instance.playerHeldBy;
+                if (player == null) return;
+                if (player.playerClientId != NetworkManager.Singleton.LocalClientId) return;
+                if (Config.debugMode.Value)
+                {
+                    WalkieSpamExplodeBase.Logger.LogInfo("Remote triggered!");
+                }
+                WalkieSpamNetwork.SendWalkieUsed(player.playerClientId,Config.remoteAngerIncreaseAmount.Value, true);
             }
         }
         [HarmonyPatch(typeof(StartOfRound))]
