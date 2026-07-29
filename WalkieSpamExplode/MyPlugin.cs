@@ -30,7 +30,7 @@ namespace WalkieSpamExplode
         private Coroutine decreaseAngerCoroutine;
         internal static new ConfigHandler Config;
         private static readonly MethodInfo BroadcastSFXMethod = typeof(WalkieTalkie).GetMethod("BroadcastSFXFromWalkieTalkie",BindingFlags.Instance | BindingFlags.NonPublic);
-        private static readonly FieldInfo PlayerDeathSFXField =typeof(WalkieTalkie).GetField("playerDieOnWalkieTalkieSFX",BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo PlayerDeathSFXField = typeof(WalkieTalkie).GetField("playerDieOnWalkieTalkieSFX");
         private void Awake()
         {
             if (Instance == null)
